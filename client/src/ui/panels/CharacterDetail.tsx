@@ -82,7 +82,8 @@ export function CharacterDetail({
   const locationNames = useMemo(() => buildLocationNameMap(locations), [locations]);
   const mergedHistory = useMemo(() => {
     const merged = new Map<string, SimulationEvent>();
-    [...storedEvents, ...liveEvents].forEach((event, index) => {
+    const liveEventsOldToNew = [...liveEvents].reverse();
+    [...storedEvents, ...liveEventsOldToNew].forEach((event, index) => {
       if (!eventTouchesCharacter(event, charId)) return;
       merged.set(event.id || `${event.type}-${event.gameDay}-${event.gameTick}-${index}`, event);
     });
@@ -393,6 +394,14 @@ function getDialogueParticipants(event: SimulationEvent): string[] {
 function compareHistoryRecordsDesc(a: HistoryRecord, b: HistoryRecord): number {
   if (a.gameDay !== b.gameDay) return b.gameDay - a.gameDay;
   if (a.gameTick !== b.gameTick) return b.gameTick - a.gameTick;
+
+  if (
+    a.kind === "dialogue_turn" &&
+    b.kind === "dialogue_turn" &&
+    a.conversationId === b.conversationId
+  ) {
+    return b.turnIndex - a.turnIndex;
+  }
 
   const createdAtCompare = (b.createdAt || "").localeCompare(a.createdAt || "");
   if (createdAtCompare !== 0) return createdAtCompare;

@@ -254,14 +254,7 @@ export class WorldScene extends Phaser.Scene {
       const pos = this.getCharacterPlacement(charInfo, mainAreaOccupants);
       let sprite = this.characterSprites.get(char.id);
 
-      if (sprite) {
-        sprite.stopMoving();
-        sprite.clearTransientUi();
-        sprite.setPosition(pos.x, pos.y);
-        sprite.setCurrentAction(null);
-        sprite.setActionIcon("");
-        sprite.setActionLabel(null);
-      } else {
+      if (!sprite) {
         const color = getCharacterColor(index);
         sprite = new CharacterSprite(this, pos.x, pos.y, {
           characterId: char.id,
@@ -273,6 +266,8 @@ export class WorldScene extends Phaser.Scene {
         this.entityLayer.add(sprite);
         this.characterSprites.set(char.id, sprite);
       }
+
+      this.applyCharacterSnapshotToSprite(sprite, charInfo, pos, zoom);
     }
   }
 
@@ -470,6 +465,10 @@ export class WorldScene extends Phaser.Scene {
       }
       if (spriteA && spriteB) {
         if (dialogue.phase === "turn" && dialogue.turnIndexStart === 0) {
+          await this.reconcileDialogueParticipantLocations(
+            dialogue.participants,
+            event.location,
+          );
           const runtimePatch = await this.characterMovement.approachForDialogue(idA, idB);
           if (runtimePatch?.mainAreaPointId && !this.isReplaying) {
             void apiClient.patchCharacterRuntimeState(idA, runtimePatch).catch((error) => {
@@ -510,6 +509,24 @@ export class WorldScene extends Phaser.Scene {
         this.scheduleTickPlaybackCompletionCheck();
       });
     }
+  }
+
+  private async reconcileDialogueParticipantLocations(
+    participantIds: string[],
+    locationId?: string,
+  ): Promise<void> {
+    if (!locationId) return;
+
+    await Promise.all(
+      participantIds.map(async (participantId) => {
+        const sprite = this.characterSprites.get(participantId);
+        if (!sprite || sprite.currentLocationId === locationId) return;
+
+        await this.characterMovement.moveToLocation(participantId, locationId, {
+          force: true,
+        });
+      }),
+    );
   }
 
   private setDialogueActionState(participantIds: string[], action: string | null) {

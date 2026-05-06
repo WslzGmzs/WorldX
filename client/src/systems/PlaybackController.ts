@@ -3,6 +3,7 @@ import { apiClient } from "../ui/services/api-client";
 import type {
   GameTime,
   SimulationEvent,
+  SceneConfigInfo,
   WorldTimeInfo,
   TimelineFrame,
   TimelineTickFrame,
@@ -13,9 +14,16 @@ type TickResponse = {
   gameTime: WorldTimeInfo;
   eventCount: number;
   events: SimulationEvent[];
+  activeSimulationTicks?: number;
+  canSwitchContext?: boolean;
 };
 
 export type PlaybackMode = "live" | "replay";
+
+type LiveSimulationContext = {
+  worldId: string;
+  timelineId: string;
+};
 
 export class PlaybackController extends Phaser.Events.EventEmitter {
   private currentTime: WorldTimeInfo = {
@@ -31,6 +39,8 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
   private playbackInProgress = false;
   private requestInFlight = false;
   private prefetchedTick: TickResponse | null = null;
+  private liveContext: LiveSimulationContext | null = null;
+  private sceneConfig: SceneConfigInfo | null = null;
   private cycleTicks = 48;
   private curtainDropped = false;
 
@@ -46,8 +56,18 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
   }
 
   async initialize(): Promise<void> {
-    const worldTime = await apiClient.getWorldTime();
+    const [worldTime, worldInfo] = await Promise.all([
+      apiClient.getWorldTime(),
+      apiClient.getWorldInfo(),
+    ]);
     this.currentTime = worldTime;
+    this.sceneConfig = worldInfo.sceneConfig;
+    if (worldInfo.currentWorldId && worldInfo.currentTimelineId) {
+      this.liveContext = {
+        worldId: worldInfo.currentWorldId,
+        timelineId: worldInfo.currentTimelineId,
+      };
+    }
     this.globalEventBus.emit("time_update", { ...this.currentTime });
     this.globalEventBus.emit("simulation_status", { status: "idle" });
     this.emitPlaybackState();
@@ -87,7 +107,9 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
 
       const initFrame = frames[0];
       if (initFrame.type === "init") {
+        this.currentTime = this.buildWorldTimeInfo(initFrame.gameTime);
         this.globalEventBus.emit("replay_init", initFrame);
+        this.globalEventBus.emit("time_update", { ...this.currentTime });
         this.replayIndex = 1;
       }
 
@@ -170,11 +192,7 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
     const tickFrame = frame as TimelineTickFrame;
     const events = tickFrame.events ?? [];
 
-    this.currentTime = {
-      ...this.currentTime,
-      day: tickFrame.gameTime.day,
-      tick: tickFrame.gameTime.tick,
-    };
+    this.currentTime = this.buildWorldTimeInfo(tickFrame.gameTime);
 
     this.globalEventBus.emit("tick_playback_started", {
       gameTime: tickFrame.gameTime,
@@ -252,6 +270,13 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
     this.autoPlay = enabled;
     this.nextTickDueAt = enabled ? performance.now() : 0;
     this.emitPlaybackState();
+    if (!enabled) {
+      this.globalEventBus.emit("simulation_status", {
+        status: this.requestInFlight || this.playbackInProgress ? "pausing" : "paused",
+        autoPlay: this.autoPlay,
+        tickIntervalMs: this.tickIntervalMs,
+      });
+    }
   }
 
   setTickIntervalMs(value: number): void {
@@ -321,7 +346,7 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
 
       await this.waitForTickPlaybackCompletion(result.events?.length ?? 0);
       this.globalEventBus.emit("simulation_status", {
-        status: "idle",
+        status: this.autoPlay ? "running" : this.requestInFlight ? "pausing" : "paused",
         eventCount: result.eventCount,
         autoPlay: this.autoPlay,
         tickIntervalMs: this.tickIntervalMs,
@@ -347,9 +372,13 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
   }
 
   private async fetchTick(): Promise<TickResponse> {
+    if (!this.liveContext) {
+      throw new Error("Simulation context is not ready.");
+    }
+
     this.requestInFlight = true;
     try {
-      return await apiClient.simulateTick();
+      return await apiClient.simulateTick(this.liveContext);
     } finally {
       this.requestInFlight = false;
     }
@@ -360,6 +389,13 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
     void this.fetchTick()
       .then((result) => {
         this.prefetchedTick = result;
+        if (!this.autoPlay && !this.playbackInProgress) {
+          this.globalEventBus.emit("simulation_status", {
+            status: "paused",
+            autoPlay: this.autoPlay,
+            tickIntervalMs: this.tickIntervalMs,
+          });
+        }
       })
       .catch((error) => {
         this.autoPlay = false;
@@ -389,5 +425,66 @@ export class PlaybackController extends Phaser.Events.EventEmitter {
       tickIntervalMs: this.tickIntervalMs,
       mode: this.mode,
     });
+  }
+
+  private buildWorldTimeInfo(gameTime: GameTime): WorldTimeInfo {
+    const timeString = this.formatTickTime(gameTime.tick);
+    return {
+      day: gameTime.day,
+      tick: gameTime.tick,
+      timeString,
+      period: this.getTimePeriodLabel(gameTime.tick),
+    };
+  }
+
+  private formatTickTime(tick: number): string {
+    const config = this.sceneConfig;
+    const [startH, startM] = (config?.startTime || this.currentTime.timeString || "08:00")
+      .split(":")
+      .map(Number);
+    const tickDurationMinutes = config?.tickDurationMinutes || 15;
+    const totalMinutes =
+      (Number.isFinite(startH) ? startH : 8) * 60 +
+      (Number.isFinite(startM) ? startM : 0) +
+      tick * tickDurationMinutes;
+    const hours = Math.floor(totalMinutes / 60) % 24;
+    const minutes = totalMinutes % 60;
+
+    if (config?.displayFormat === "ancient_chinese") {
+      return this.formatAncientChineseTime(hours, minutes);
+    }
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  }
+
+  private formatAncientChineseTime(hours: number, minutes: number): string {
+    const periods = [
+      "子", "丑", "寅", "卯", "辰", "巳",
+      "午", "未", "申", "酉", "戌", "亥",
+    ];
+    const idx = Math.floor(((hours + 1) % 24) / 2);
+    const half = hours % 2 === 0 ? "初" : "正";
+    const hhmm = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+    return `${periods[idx]}时${half} (${hhmm})`;
+  }
+
+  private getTimePeriodLabel(tick: number): string {
+    const config = this.sceneConfig;
+    const [startH, startM] = (config?.startTime || this.currentTime.timeString || "08:00")
+      .split(":")
+      .map(Number);
+    const tickDurationMinutes = config?.tickDurationMinutes || 15;
+    const totalMinutes =
+      (Number.isFinite(startH) ? startH : 8) * 60 +
+      (Number.isFinite(startM) ? startM : 0) +
+      tick * tickDurationMinutes;
+    const hours = Math.floor(totalMinutes / 60) % 24;
+
+    if (hours >= 5 && hours < 9) return "清晨";
+    if (hours >= 9 && hours < 12) return "上午";
+    if (hours >= 12 && hours < 14) return "中午";
+    if (hours >= 14 && hours < 17) return "下午";
+    if (hours >= 17 && hours < 19) return "傍晚";
+    if (hours >= 19 && hours < 22) return "晚上";
+    return "深夜";
   }
 }
