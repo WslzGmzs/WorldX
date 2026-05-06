@@ -254,14 +254,7 @@ export class WorldScene extends Phaser.Scene {
       const pos = this.getCharacterPlacement(charInfo, mainAreaOccupants);
       let sprite = this.characterSprites.get(char.id);
 
-      if (sprite) {
-        sprite.stopMoving();
-        sprite.clearTransientUi();
-        sprite.setPosition(pos.x, pos.y);
-        sprite.setCurrentAction(null);
-        sprite.setActionIcon("");
-        sprite.setActionLabel(null);
-      } else {
+      if (!sprite) {
         const color = getCharacterColor(index);
         sprite = new CharacterSprite(this, pos.x, pos.y, {
           characterId: char.id,
@@ -273,6 +266,8 @@ export class WorldScene extends Phaser.Scene {
         this.entityLayer.add(sprite);
         this.characterSprites.set(char.id, sprite);
       }
+
+      this.applyCharacterSnapshotToSprite(sprite, charInfo, pos, zoom);
     }
   }
 

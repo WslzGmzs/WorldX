@@ -307,6 +307,11 @@ function AppContent({ eventBus }: { eventBus: Phaser.Events.EventEmitter }) {
     };
     const onReplayMode = (payload: { active: boolean }) => {
       setIsReplaying(payload.active);
+      if (payload.active) {
+        setEvents([]);
+        setDialogueEvents([]);
+        setDismissedIds(new Set());
+      }
       if (!payload.active) setReplayProgress(null);
     };
     const onReplayProgress = (payload: { current: number; total: number }) => {
