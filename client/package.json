@@ -15,10 +15,10 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-i18next": "^17.0.4",
-    "react-router-dom": "^7.5.0",
+    "react-router-dom": "^7.16.0",
     "recharts": "^3.8.1",
-    "vis-data": "^7.1.9",
-    "vis-network": "^9.1.9"
+    "vis-data": "^8.0.4",
+    "vis-network": "^10.1.0"
   },
   "devDependencies": {
     "@types/react": "^19.1.0",
